@@ -11143,6 +11143,17 @@ html.mv-theme-dark .mv-chat-input-row:focus-within {
   var authExpiredHandled = false;
   function handleAuthExpired(customMessage) {
     if (authExpiredHandled) return;
+    // Nothing to expire if there was never a session token to begin with --
+    // this fires from ANY 401, including background chat/notif-badge
+    // polling ticks (see the visibilitychange listeners further down) that
+    // keep running even while nobody's logged in yet, e.g. mid-signup.
+    // Without this guard, simply backgrounding the tab to grab an OTP code
+    // from Mail and coming straight back (no reload at all, the JS/vars are
+    // still alive) could still land on "Your session expired" and bounce
+    // back to a blank email field, purely because one of those pollers made
+    // an unauthenticated request and got a 401 -- there was no real session
+    // to lose in the first place.
+    if (!AUTH_TOKEN) return;
     authExpiredHandled = true;
     clearSession();
     stopAutoSync();
@@ -21013,12 +21024,24 @@ html.mv-theme-dark .mv-chat-input-row:focus-within {
       return;
     }
 
+    // An in-progress signup/forgot-password flow (still inside its own
+    // savedAt/TTL window -- see loadAuthFlowState) wins over a stored
+    // session token. Without this, closing the tab mid-OTP on a device that
+    // still has an old/expired session token sitting in localStorage from
+    // earlier testing/logins went straight into finishInit() with that
+    // stale token, which only surfaced as a 401 deep inside some later API
+    // call -- landing back on "Your session expired, please log in again"
+    // instead of the OTP screen this device was actually in the middle of,
+    // even though resumeAuthFlowFromState() had everything needed to put
+    // the right panel (with the email already filled in) straight back up.
+    if (resumeAuthFlowFromState()) return;
+
     if (storedToken && storedUsername) {
       AUTH_TOKEN = storedToken;
       AUTH_USERNAME = storedUsername;
       hideAuthOverlay();
       await finishInit();
-    } else if (!resumeAuthFlowFromState()) {
+    } else {
       showAuthOverlay('login');
     }
   }
